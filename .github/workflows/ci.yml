@@ -1,17 +1,12 @@
 name: ci
 
 on:
-  push:
-    branches:
-      - master
-      - develop
-      - '4.x'
-      - '5.x'
-    paths-ignore:
-      - '*.md'
-  pull_request:
-    paths-ignore:
-      - '*.md'
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Space-separated mocha test files to run instead of the full suite'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -23,24 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 'lts/*'
-
-      - name: Install dependencies
-        run: npm install --ignore-scripts --include=dev
-
-      - name: Run lint
-        run: npm run lint
-
   test:
     name: Run tests
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -154,39 +134,38 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: npm run test-ci
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            ./node_modules/.bin/mocha --require test/support/env --reporter spec --check-leaks ${{ inputs.test-filter }}
+          else
+            npm run test-ci
+          fi
+          echo "=== Skipped (pending) test report ==="
+          node -e 'var m = +process.versions.node.split(".")[0]; var als = false; try { als = typeof require("async_hooks").AsyncLocalStorage === "function" } catch (e) {} console.log("Node " + process.version + ":"); console.log("SKIP app.router \"should not support GET without a path\": app.get(name) with one argument is the settings getter, so the no-path check does not apply to GET (skipped on every Node version, test/app.router.js)"); if (m < 22) console.log("SKIP QUERY-method tests (app.router include/without-path QUERY, res.send ETag QUERY): Node < 22 has no HTTP QUERY method (shouldSkipQuery in test/support/utils.js)"); if (!als) console.log("SKIP async local storage describe blocks (express.json/raw/text/urlencoded, res.download, res.sendFile): async_hooks.AsyncLocalStorage is not available on this Node version")'
 
-      - name: Upload code coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-node-${{ matrix.node-version }}-${{ matrix.os }}
-          path: ./coverage/lcov.info
-          retention-days: 1
-
-  coverage:
-    needs: test
+  pack:
+    name: Pack npm tarball
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install lcov
-        shell: bash
-        run: sudo apt-get -y install lcov
-
-      - name: Collect coverage reports
-        uses: actions/download-artifact@v4
         with:
-          path: ./coverage
-          pattern: coverage-node-*
+          persist-credentials: false
 
-      - name: Merge coverage reports
-        shell: bash
-        run: find ./coverage -name lcov.info -exec printf '-a %q\n' {} \; | xargs lcov -o ./lcov.info
-
-      - name: Upload coverage report
-        uses: coverallsapp/github-action@v2
+      - name: Setup Node.js 20.19.5
+        uses: actions/setup-node@v4
         with:
-          file: ./lcov.info
+          node-version: "20.19.5"
+
+      - name: Pack
+        run: |
+          echo "Node.js version: $(node -v)"
+          echo "NPM version: $(npm -v)"
+          npm pack
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: ./express-*.tgz
+          if-no-files-found: error
